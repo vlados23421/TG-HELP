@@ -1,181 +1,149 @@
 import config
 import datetime
 import random
-import pymysql
+import psycopg2
+import os
+from psycopg2 import pool
+
+# Пул соединений (чтобы не открывать новое подключение каждый раз)
+DATABASE_URL = os.environ.get('DATABASE_URL')
+connection_pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL)
 
 
-#Добавить агента
+def get_conn():
+    return connection_pool.getconn()
+
+
+def release_conn(conn):
+    connection_pool.putconn(conn)
+
+
+# Добавить агента
 def add_agent(agent_id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"INSERT INTO agents (`agent_id`) VALUES ('{agent_id}')")
+    cur.execute("INSERT INTO agents (agent_id) VALUES (%s)", (agent_id,))
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Добавить файл
+# Добавить файл
 def add_file(req_id, file_id, file_name, type):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"INSERT INTO files (`req_id`, `file_id`, `file_name`, `type`) VALUES ('{req_id}', '{file_id}', '{file_name}', '{type}')")
+    cur.execute(
+        "INSERT INTO files (req_id, file_id, file_name, type) VALUES (%s, %s, %s, %s)",
+        (req_id, file_id, file_name, type)
+    )
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Создать запрос
+# Создать запрос
 def new_req(user_id, request):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    #Добавить запрос в БД
-    cur.execute(f"INSERT INTO requests (`user_id`, `req_status`) VALUES ('{user_id}', 'waiting')") 
-
-    #Получить айди добавленного запроса
-    req_id = cur.lastrowid
+    cur.execute("INSERT INTO requests (user_id, req_status) VALUES (%s, 'waiting') RETURNING req_id", (user_id,))
+    req_id = cur.fetchone()[0]
 
     dt = datetime.datetime.now()
     date_now = dt.strftime('%d.%m.%Y %H:%M:%S')
 
-    #Добавить сообщение для запроса
-    cur.execute(f"INSERT INTO messages (`req_id`, `message`, `user_status`, `date`) VALUES ('{req_id}', '{request}', 'user', '{date_now}')")
-
+    cur.execute(
+        "INSERT INTO messages (req_id, message, user_status, date) VALUES (%s, %s, 'user', %s)",
+        (req_id, request, date_now)
+    )
     con.commit()
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return req_id
 
 
-#Добавить сообщение
+# Добавить сообщение
 def add_message(req_id, message, user_status):
-    if user_status == 'user':
-        req_status = 'waiting'
-    elif user_status == 'agent':
-        req_status = 'answered'
-
+    req_status = 'waiting' if user_status == 'user' else 'answered'
     dt = datetime.datetime.now()
     date_now = dt.strftime('%d.%m.%Y %H:%M:%S')
 
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    #Добавить сообщение для запроса
-    cur.execute(f"INSERT INTO messages (`req_id`, `message`, `user_status`, `date`) VALUES ('{req_id}', '{message}', '{user_status}', '{date_now}')")
-    
-    #Изменить статус запроса
-    cur.execute(f"UPDATE requests SET `req_status` = '{req_status}' WHERE `req_id` = '{req_id}'")
-    
+    cur.execute(
+        "INSERT INTO messages (req_id, message, user_status, date) VALUES (%s, %s, %s, %s)",
+        (req_id, message, user_status, date_now)
+    )
+    cur.execute("UPDATE requests SET req_status = %s WHERE req_id = %s", (req_status, req_id))
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Добавить пароли
+# Добавить пароли
 def add_passwords(passwords):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
     for password in passwords:
-        cur.execute(f"INSERT INTO passwords (`password`) VALUES ('{password}')")
-        
+        cur.execute("INSERT INTO passwords (password) VALUES (%s)", (password,))
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Проверить статус агента
+# Проверить статус агента
 def check_agent_status(user_id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT * FROM agents WHERE `agent_id` = '{user_id}'")
+    cur.execute("SELECT * FROM agents WHERE agent_id = %s", (user_id,))
     agent = cur.fetchone()
-
     cur.close()
-    con.close()
-
-    if agent == None:
-        return False
-    else:
-        return True
+    release_conn(con)
+    return agent is not None
 
 
-#Проверить валидность пароля
+# Проверить валидность пароля
 def valid_password(password):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT * FROM passwords WHERE `password` = '{password}'")
-    password = cur.fetchone()
-
+    cur.execute("SELECT * FROM passwords WHERE password = %s", (password,))
+    row = cur.fetchone()
     cur.close()
-    con.close()
-
-    if password == None:
-        return False
-    else:
-        return True
+    release_conn(con)
+    return row is not None
 
 
-#Проверить отправляет ли пользователь файл, если да - вернуть его
+# Проверить, отправляет ли пользователь файл
 def get_file(message):
-    """
-    Атрибут file_name доступен только в типах файлов - document и video.
-    Если пользователь отправляет не документ и не видео - в качестве имени файла передать дату и время отправки (date_now)
-    """
-
     types = ['document', 'video', 'audio', 'voice']
     dt = datetime.datetime.now()
     date_now = dt.strftime('%d.%m.%Y %H:%M:%S')
 
-    #Сначала проверить отправляет ли пользователь фото
     try:
         return {'file_id': message.json['photo'][-1]['file_id'], 'file_name': date_now, 'type': 'photo', 'text': str(message.caption)}
-
-    #Если нет - проверить отправляет ли документ, видео, аудио, голосовое сообщение
     except:
         for type in types:
             try:
-                if type == 'document' or type == 'video':
+                if type in ('document', 'video'):
                     file_name = message.json[type]['file_name']
                 else:
                     file_name = date_now
-
                 return {'file_id': message.json[type]['file_id'], 'file_name': file_name, 'type': type, 'text': str(message.caption)}
             except:
                 pass
-    
         return None
 
 
-#Получить иконку статуса запроса
+# Получить иконку статуса запроса
 def get_icon_from_status(req_status, user_status):
     if req_status == 'confirm':
         return '✅'
-
     elif req_status == 'waiting':
-        if user_status == 'user':
-            return '⏳'
-        elif user_status == 'agent':
-            return '❗️'
-
+        return '⏳' if user_status == 'user' else '❗️'
     elif req_status == 'answered':
-        if user_status == 'user':
-            return '❗️'
-        elif user_status == 'agent':
-            return '⏳'
+        return '❗️' if user_status == 'user' else '⏳'
 
 
-#Получить текст для кнопки с файлом
+# Получить текст для кнопки с файлом
 def get_file_text(file_name, type):
     if type == 'photo':
         return f'📷 | Фото {file_name}'
@@ -187,197 +155,163 @@ def get_file_text(file_name, type):
         return f'🎵 | Аудио {file_name}'
     elif type == 'voice':
         return f'🎧 | Голосовое сообщение {file_name}'
-            
 
-#Сгенерировать пароли
+
+# Сгенерировать пароли
 def generate_passwords(number, lenght):
     chars = 'abcdefghijklnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
-
     passsords = []
     for _ in range(number):
         password = ''
         for _ in range(lenght):
             password += random.choice(chars)
-
         passsords.append(password)
-
     return passsords
 
 
-#Получить юзер айди пользователя, создавшего запрос
+# Получить user_id создателя запроса
 def get_user_id_of_req(req_id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `user_id` FROM requests WHERE `req_id` = '{req_id}'")
+    cur.execute("SELECT user_id FROM requests WHERE req_id = %s", (req_id,))
     user_id = cur.fetchone()[0]
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return user_id
 
 
-#Получить file_id из id записи в БД
+# Получить file_id по id записи в БД
 def get_file_id(id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `file_id` FROM files WHERE `id` = '{id}'")
+    cur.execute("SELECT file_id FROM files WHERE id = %s", (id,))
     file_id = cur.fetchone()[0]
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return file_id
 
 
-#Получить статус запроса
+# Получить статус запроса
 def get_req_status(req_id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `req_status` FROM requests WHERE `req_id` = '{req_id}'")
+    cur.execute("SELECT req_status FROM requests WHERE req_id = %s", (req_id,))
     req_status = cur.fetchone()[0]
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return req_status
 
 
-#Удалить пароль
+# Удалить пароль
 def delete_password(password):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"DELETE FROM {config.MySQL[3]}.passwords WHERE `password` = '{password}'")
+    cur.execute("DELETE FROM passwords WHERE password = %s", (password,))
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Удалить агента
+# Удалить агента
 def delete_agent(agent_id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"DELETE FROM {config.MySQL[3]}.agents WHERE `agent_id` = '{agent_id}'")
+    cur.execute("DELETE FROM agents WHERE agent_id = %s", (agent_id,))
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Завершить запрос
+# Завершить запрос
 def confirm_req(req_id):
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"UPDATE requests SET `req_status` = 'confirm' WHERE `req_id` = '{req_id}'")
+    cur.execute("UPDATE requests SET req_status = 'confirm' WHERE req_id = %s", (req_id,))
     con.commit()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
 
-#Получить пароли с лимитом
+# Получить пароли с лимитом
 def get_passwords(number):
     limit = (int(number) * 10) - 10
-
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `password` FROM passwords LIMIT {limit}, 10")
+    cur.execute("SELECT password FROM passwords LIMIT 10 OFFSET %s", (limit,))
     passwords = cur.fetchall()
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return passwords
 
 
-#Получить агентов с лимитом
+# Получить агентов с лимитом
 def get_agents(number):
     limit = (int(number) * 10) - 10
-
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `agent_id` FROM agents LIMIT {limit}, 10")
+    cur.execute("SELECT agent_id FROM agents LIMIT 10 OFFSET %s", (limit,))
     agents = cur.fetchall()
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return agents
 
 
-#Получить мои запросы с лимитом
+# Получить мои запросы с лимитом
 def my_reqs(number, user_id):
     limit = (int(number) * 10) - 10
-
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `req_id`, `req_status` FROM requests WHERE `user_id` = '{user_id}' ORDER BY `req_id` DESC LIMIT {limit}, 10")
+    cur.execute(
+        "SELECT req_id, req_status FROM requests WHERE user_id = %s ORDER BY req_id DESC LIMIT 10 OFFSET %s",
+        (user_id, limit)
+    )
     reqs = cur.fetchall()
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return reqs
 
 
-#Получить запросы по статусу с лимитом
+# Получить запросы по статусу с лимитом
 def get_reqs(number, callback):
     limit = (int(number) * 10) - 10
     req_status = callback.replace('_reqs', '')
-
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `req_id`, `req_status` FROM requests WHERE `req_status` = '{req_status}' ORDER BY `req_id` DESC LIMIT {limit}, 10")
+    cur.execute(
+        "SELECT req_id, req_status FROM requests WHERE req_status = %s ORDER BY req_id DESC LIMIT 10 OFFSET %s",
+        (req_status, limit)
+    )
     reqs = cur.fetchall()
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return reqs
 
 
-#Получить файлы по запросу с лимитом
+# Получить файлы по запросу с лимитом
 def get_files(number, req_id):
     limit = (int(number) * 10) - 10
-
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `id`, `file_name`, `type` FROM files WHERE `req_id` = '{req_id}' ORDER BY `id` DESC LIMIT {limit}, 10")
+    cur.execute(
+        "SELECT id, file_name, type FROM files WHERE req_id = %s ORDER BY id DESC LIMIT 10 OFFSET %s",
+        (req_id, limit)
+    )
     files = cur.fetchall()
-
     cur.close()
-    con.close()
-
+    release_conn(con)
     return files
 
 
-#Получить историю запроса
+# Получить историю запроса
 def get_request_data(req_id, callback):
-    if 'my_reqs' in callback:
-        get_dialog_user_status = 'user'
-    else:
-        get_dialog_user_status = 'agent'
+    get_dialog_user_status = 'user' if 'my_reqs' in callback else 'agent'
 
-    con = pymysql.connect(host=config.MySQL[0], user=config.MySQL[1], passwd=config.MySQL[2], db=config.MySQL[3])
+    con = get_conn()
     cur = con.cursor()
-
-    cur.execute(f"SELECT `message`, `user_status`, `date` FROM messages WHERE `req_id` = '{req_id}'")
+    cur.execute("SELECT message, user_status, date FROM messages WHERE req_id = %s", (req_id,))
     messages = cur.fetchall()
-
     cur.close()
-    con.close()
+    release_conn(con)
 
     data = []
     text = ''
@@ -386,32 +320,25 @@ def get_request_data(req_id, callback):
     for message in messages:
         message_value = message[0]
         user_status = message[1]
-        date = message[2] 
+        date = message[2]
 
         if user_status == 'user':
-            if get_dialog_user_status == 'user':
-                text_status = '👤 Ваше сообщение'
-            else:
-                text_status = '👤 Сообщение пользователя'
-        elif user_status == 'agent':
+            text_status = '👤 Ваше сообщение' if get_dialog_user_status == 'user' else '👤 Сообщение пользователя'
+        else:
             text_status = '🧑‍💻 Агент поддержки'
 
-        #Бэкап для текста
         backup_text = text
         text += f'{text_status}\n{date}\n{message_value}\n\n'
 
-        #Если размер текста превышает допустимый в Telegram, то добавить первую часть текста и начать вторую
         if len(text) >= 4096:
             data.append(backup_text)
             text = f'{text_status}\n{date}\n{message_value}\n\n'
 
-        #Если сейчас последняя итерация, то проверить не является ли часть текста превыщающий допустимый размер (4096 символов). Если превышает - добавить часть и начать следующую. Если нет - просто добавить последнюю часть списка.
         if len(messages) == i:
             if len(text) >= 4096:
                 data.append(backup_text)
                 text = f'{text_status}\n{date}\n{message_value}\n\n'
-            
-            data.append(text)   
+            data.append(text)
 
         i += 1
 
